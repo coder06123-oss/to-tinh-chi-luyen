@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>💗</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    height: 100%;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+</style>
+</head>
+<body>
+<canvas id="heart"></canvas>
+<script>
+(function () {
+  'use strict';
+
+  var canvas = document.getElementById('heart');
+  var ctx = canvas.getContext('2d');
+
+  var PI  = Math.PI;
+  var PI2 = Math.PI * 2;
+
+  var GENERATE_FRAME = 20;
+  var FRAME_INTERVAL = 160;
+
+  var RIM_POINTS        = 2600;
+  var EDGE_SCATTER_PER  = 3;
+  var BODY_SCATTER      = 5200;
+  var INNER_DUST        = 420;
+  var BRIGHT_RIM_POINTS = 1500;
+  var STRAY_DUST        = 220;
+  var TWINKLE_COUNT     = 130;
+
+  var PALETTE_RIM = [
+    ['#ffdfe5', 3],
+    ['#ffb9c6', 5],
+    ['#ff8fa3', 6],
+    ['#f76070', 8]
+  ];
+  var PALETTE_BODY = [
+    ['#f76070', 7],
+    ['#e64a5e', 6],
+    ['#c22b45', 5],
+    ['#9e2038', 4],
+    ['#ff9aa8', 2]
+  ];
+  var PALETTE_DARK = [
+    ['#8b1a2b', 5],
+    ['#6d1424', 5],
+    ['#551020', 4],
+    ['#400c18', 3]
+  ];
+  var PALETTE_SPARKLE = [
+    ['#ffffff', 2],
+    ['#ffeef1', 4],
+    ['#ffd7de', 5]
+  ];
+
+  function buildPicker(palette) {
+    var bag = [];
+    for (var i = 0; i < palette.length; i++) {
+      for (var k = 0; k < palette[i][1]; k++) bag.push(palette[i][0]);
+    }
+    return function () { return bag[(Math.random() * bag.length) | 0]; };
+  }
+
+  var pickRim     = buildPicker(PALETTE_RIM);
+  var pickBody    = buildPicker(PALETTE_BODY);
+  var pickDark    = buildPicker(PALETTE_DARK);
+  var pickSparkle = buildPicker(PALETTE_SPARKLE);
+
+  var rgbaCache = {};
+  function rgba(hex, a) {
+    var key = hex + '|' + a;
+    var v = rgbaCache[key];
+    if (v) return v;
+    var r = parseInt(hex.slice(1, 3), 16);
+    var g = parseInt(hex.slice(3, 5), 16);
+    var b = parseInt(hex.slice(5, 7), 16);
+    v = 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+    rgbaCache[key] = v;
+    return v;
+  }
+
+  var W, H, CX, CY, SCALE, DPR, DENSITY;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width  = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    CX = W / 2;
+    CY = H / 2;
+    SCALE = Math.min(W, H) / 480 * 11;
+    DENSITY = Math.max(0.65, Math.min(1.25, Math.min(W, H) / 640));
+
+    rebuild();
+  }
+
+  function heartFunction(t, shrinkRatio) {
+    var x = 16 * Math.pow(Math.sin(t), 3);
+    var y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t)
+              - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+    return [x * shrinkRatio + CX, y * shrinkRatio + CY];
+  }
+
+  function scatterInside(x, y, beta) {
+    var rx = -beta * Math.log(Math.random());
+    var ry = -beta * Math.log(Math.random());
+    return [x - rx * (x - CX), y - ry * (y - CY)];
+  }
+
+  function shrink(x, y, ratio) {
+    var d2 = (x - CX) * (x - CX) + (y - CY) * (y - CY);
+    var force = -1 / Math.pow(d2, 0.6);
+    return [x - ratio * force * (x - CX), y - ratio * force * (y - CY)];
+  }
+
+  function curve(p) {
+    return 2 * (2 * Math.sin(4 * p)) / PI2;
+  }
+
+  function calcPosition(x, y, ratio) {
+    var d2 = (x - CX) * (x - CX) + (y - CY) * (y - CY);
+    var force = 1 / Math.pow(d2, 0.520);
+    var dx = ratio * force * (x - CX) + ((Math.random() * 3) | 0) - 1;
+    var dy = ratio * force * (y - CY) + ((Math.random() * 3) | 0) - 1;
+    return [x - dx, y - dy];
+  }
+
+  function insideHeart(px, py) {
+    var x = (px - CX) / SCALE;
+    var y = -(py - CY) / SCALE;
+    var nx = x / 16, ny = y / 16;
+    var xx = nx * 1.3, yy = ny * 1.3 + 0.05;
+    var a = xx * xx + yy * yy - 0.08;
+    return a * a * a - xx * xx * yy * yy * yy * 0.35 <= 0;
+  }
+
+  var frames = [];
+
+  function rebuild() {
+    var i, k, t, p, x, y;
+
+    var rimPts = [];
+    var nRim = (RIM_POINTS * DENSITY) | 0;
+    for (i = 0; i < nRim; i++) {
+      t = Math.random() * PI2;
+      rimPts.push(heartFunction(t, SCALE));
+    }
+
+    var edgePts = [];
+    for (i = 0; i < rimPts.length; i++) {
+      for (k = 0; k < EDGE_SCATTER_PER; k++) {
+        p = scatterInside(rimPts[i][0], rimPts[i][1], 0.05);
+        edgePts.push(p);
+      }
+    }
+
+    var bodyPts = [];
+    var nBody = (BODY_SCATTER * DENSITY) | 0;
+    for (i = 0; i < nBody; i++) {
+      p = rimPts[(Math.random() * rimPts.length) | 0];
+      bodyPts.push(scatterInside(p[0], p[1], 0.17));
+    }
+
+    var dustPts = [];
+    var nDust = (INNER_DUST * DENSITY) | 0;
+    var guard = 0;
+    while (dustPts.length < nDust && guard < nDust * 40) {
+      guard++;
+      x = CX + (Math.random() - 0.5) * SCALE * 26;
+      y = CY + (Math.random() - 0.5) * SCALE * 26;
+      if (insideHeart(x, y)) dustPts.push([x, y]);
+    }
+
+    frames = [];
+    for (var f = 0; f < GENERATE_FRAME; f++) {
+      var beat = curve(f / 10 * PI);
+      var ratio = 10 * beat;
+      var haloRadius = 4 + 6 * (1 + beat);
+      var haloNumber = ((3000 + 4000 * Math.abs(beat * beat)) * DENSITY) | 0;
+
+      var pts = [];
+
+      var haloSeen = {};
+      for (i = 0; i < haloNumber; i++) {
+        t = Math.random() * PI2;
+        p = heartFunction(t, SCALE * 1.055);
+        p = shrink(p[0], p[1], haloRadius);
+        x = p[0]; y = p[1];
+        var key = ((x | 0) * 100000 + (y | 0));
+        if (!haloSeen[key]) {
+          haloSeen[key] = 1;
+          x += ((Math.random() * 29) | 0) - 14;
+          y += ((Math.random() * 29) | 0) - 14;
+          var hs = [1, 1, 2, 2][(Math.random() * 4) | 0];
+          var hr = Math.random();
+          var hc = hr < 0.5 ? pickBody() : (hr < 0.85 ? pickDark() : pickRim());
+          pts.push([x, y, hs, rgba(hc, 0.55 + Math.random() * 0.35), 0]);
+        }
+      }
+
+      for (i = 0; i < rimPts.length; i++) {
+        p = calcPosition(rimPts[i][0], rimPts[i][1], ratio);
+        pts.push([p[0], p[1], 1 + ((Math.random() * 3) | 0),
+                  rgba(pickRim(), 0.75 + Math.random() * 0.25), 1]);
+      }
+
+      for (i = 0; i < edgePts.length; i++) {
+        p = calcPosition(edgePts[i][0], edgePts[i][1], ratio);
+        var ec = Math.random() < 0.35 ? pickRim() : pickBody();
+        pts.push([p[0], p[1], 1 + ((Math.random() * 2) | 0),
+                  rgba(ec, 0.6 + Math.random() * 0.35), 0]);
+      }
+
+      for (i = 0; i < bodyPts.length; i++) {
+        p = calcPosition(bodyPts[i][0], bodyPts[i][1], ratio);
+        var bc = Math.random() < 0.3 ? pickDark() : pickBody();
+        pts.push([p[0], p[1], 1 + ((Math.random() * 2) | 0),
+                  rgba(bc, 0.5 + Math.random() * 0.4), 0]);
+      }
+
+      var nBright = (BRIGHT_RIM_POINTS * DENSITY) | 0;
+      for (i = 0; i < nBright; i++) {
+        t = Math.random() * PI2;
+        p = heartFunction(t, SCALE * (0.985 + Math.random() * 0.05));
+        p = calcPosition(p[0], p[1], ratio * 0.9);
+        pts.push([p[0], p[1], 1,
+                  rgba(pickRim(), 0.85 + Math.random() * 0.15), 1]);
+      }
+
+      for (i = 0; i < dustPts.length; i++) {
+        p = calcPosition(dustPts[i][0], dustPts[i][1], ratio * 0.6);
+        pts.push([p[0], p[1], 1, rgba(pickDark(), 0.3 + Math.random() * 0.3), 0]);
+      }
+
+      var nStray = (STRAY_DUST * DENSITY) | 0;
+      for (i = 0; i < nStray; i++) {
+        t = Math.random() * PI2;
+        p = heartFunction(t, SCALE * (1.1 + Math.random() * 0.5));
+        x = p[0] + (Math.random() - 0.5) * 60;
+        y = p[1] + (Math.random() - 0.5) * 60;
+        var sc = Math.random() < 0.4 ? pickSparkle() : pickBody();
+        pts.push([x, y, 1, rgba(sc, 0.25 + Math.random() * 0.45), 0]);
+      }
+
+      var nTw = (TWINKLE_COUNT * DENSITY) | 0;
+      for (i = 0; i < nTw; i++) {
+        t = Math.random() * PI2;
+        p = heartFunction(t, SCALE * (0.92 + Math.random() * 0.18));
+        p = scatterInside(p[0], p[1], 0.04);
+        pts.push([p[0], p[1], 1, rgba(pickSparkle(), 0.9), 1]);
+      }
+
+      pts.sort(function (a, b) {
+        return a[3] < b[3] ? -1 : (a[3] > b[3] ? 1 : 0);
+      });
+
+      frames.push(pts);
+    }
+  }
+
+  var frame = 0;
+  var lastTime = 0;
+
+  function draw(now) {
+    if (now - lastTime >= FRAME_INTERVAL) {
+      lastTime = now;
+
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.globalCompositeOperation = 'lighter';
+
+      var pts = frames[frame % GENERATE_FRAME];
+      var currentStyle = '';
+
+      for (var i = 0; i < pts.length; i++) {
+        var p = pts[i];
+        if (p[3] !== currentStyle) {
+          currentStyle = p[3];
+          ctx.fillStyle = currentStyle;
+        }
+        var s = p[2];
+        if (p[4] === 1) {
+          ctx.globalAlpha = 0.22;
+          ctx.fillRect(p[0] - s, p[1] - s, s * 3, s * 3);
+          ctx.globalAlpha = 1;
+        }
+        ctx.fillRect(p[0], p[1], s, s);
+      }
+
+      ctx.globalAlpha = 1;
+      frame++;
+    }
+    requestAnimationFrame(draw);
+  }
+
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resize, 200);
+  });
+
+  resize();
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>
